@@ -192,12 +192,12 @@ def _project_brief(project):
 
 # ── AI 预审 ──────────────────────────────────────────────────────────────────────
 
-def ai_pre_review(project, branch_params):
+def ai_pre_review(project, branch_params, knowledge_ctx=''):
     eva = calculate_eva(project, branch_params)
     rwa = calculate_rwa(project, branch_params)
     raroc = calculate_raroc(project, branch_params)
 
-    result = _zai_pre_review(project, eva, rwa, raroc)
+    result = _zai_pre_review(project, eva, rwa, raroc, knowledge_ctx)
     if result is None:
         result = _rule_pre_review(project)
 
@@ -208,7 +208,7 @@ def ai_pre_review(project, branch_params):
     return result
 
 
-def _zai_pre_review(project, eva, rwa, raroc):
+def _zai_pre_review(project, eva, rwa, raroc, knowledge_ctx=''):
     if not zai_client.is_enabled():
         return None
 
@@ -222,16 +222,20 @@ def _zai_pre_review(project, eva, rwa, raroc):
             f"样本数 {peer['count']}。"
         )
 
+    kb_section = f"\n{knowledge_ctx}\n" if knowledge_ctx else ''
+
     system = (
         "你是北京银行公司业务条线的资深信贷预审专家，熟悉总行信贷政策、行业限额、"
         "准入负面清单、集中度要求与综合定价。请基于给定项目信息做前置预审，"
         "重点判断：①是否符合总行信贷政策；②综合效益与定价是否合理；③给出红/黄/绿灯结论与可操作建议。"
         "房地产、地方政府融资平台属于限制行业需触发专项审查。\n"
         + (policy_ctx + '\n' if policy_ctx else '')
+        + kb_section
         + "请严格只输出 JSON，字段：policy_compliance(取值:符合/基本符合/需调整/不符合)、"
         "policy_notes(字符串,政策合规要点,可多行)、benefit_assessment(取值:高/中/低)、"
         "benefit_notes(字符串)、traffic_light(取值:绿灯/黄灯/红灯)、recommendations(字符串,可操作建议,可多行)。"
         "判定原则：政策不符合→红灯；政策符合/基本符合且效益高/中→绿灯；其余→黄灯。"
+        "若知识库内容与其他政策存在冲突，以更高级别审批人员上传的知识库内容为准。"
     )
     user = (
         f"项目信息（金额单位:万元，利率单位:%）：\n{json.dumps(_project_brief(project), ensure_ascii=False, indent=2)}\n\n"
@@ -466,7 +470,7 @@ def _rule_verify_one(name):
 
 # ── AI 自动审批 ───────────────────────────────────────────────────────────────────
 
-def ai_auto_approval(project, pre_review, materials, checklist=None):
+def ai_auto_approval(project, pre_review, materials, checklist=None, knowledge_ctx=''):
     if checklist is None:
         checklist = generate_material_checklist(project)
 
@@ -490,7 +494,7 @@ def ai_auto_approval(project, pre_review, materials, checklist=None):
         hard_reject_reasons.append(f'多项材料核验不通过：{names}，请核实后重新提交')
 
     zai_part = _zai_auto_approval(project, pre_review, materials, missing_mats,
-                                  problem_mats, bool(hard_reject_reasons))
+                                  problem_mats, bool(hard_reject_reasons), knowledge_ctx)
 
     if zai_part is None:
         return _rule_auto_approval(project, pre_review, materials, checklist,
@@ -519,7 +523,7 @@ def ai_auto_approval(project, pre_review, materials, checklist=None):
     }
 
 
-def _zai_auto_approval(project, pre_review, materials, missing_mats, problem_mats, hard_rejected):
+def _zai_auto_approval(project, pre_review, materials, missing_mats, problem_mats, hard_rejected, knowledge_ctx=''):
     if not zai_client.is_enabled():
         return None
 
@@ -530,13 +534,17 @@ def _zai_auto_approval(project, pre_review, materials, missing_mats, problem_mat
         peer_ctx = (f"同业参考（{peer['industry']}·{peer['loan_type']}）："
                     f"均值{peer['rate_avg']}%，区间[{peer['rate_range'][0]}%,{peer['rate_range'][1]}%]。")
 
+    kb_section = f"\n{knowledge_ctx}\n" if knowledge_ctx else ''
+
     system = (
         "你是北京银行公司业务 AI 审批引擎。请综合评估：政策红线(一票否决)、风险维度(行业/区域/客户/产品)、"
         "定价维度(综合收益是否达标)、合规维度(材料是否齐全合规)，给出审批结论与可操作的修改建议。\n"
         + (policy_ctx + '\n' if policy_ctx else '')
+        + kb_section
         + "请严格只输出 JSON，字段：result(取值:通过/有条件通过/不通过)、"
         "policy_opinion、risk_opinion、pricing_opinion、material_opinion(均为字符串,可多行)、"
         "modification_suggestions(字符串数组,逐条列出需调整内容和建议方案;若通过可为空数组)。"
+        "若知识库内容与其他政策存在冲突，以更高级别审批人员上传的知识库内容为准。"
     )
     facts = {
         '项目信息': _project_brief(project),
@@ -656,4 +664,75 @@ def _rule_auto_approval(project, pre_review, materials, checklist, suggested_lev
         'pricing_opinion': pricing_opinion,
         'material_opinion': material_opinion,
         'modification_suggestions': json.dumps(mod_suggestions, ensure_ascii=False),
+    }
+
+
+# ── 知识库文档 AI 解读（FR-14）────────────────────────────────────────────────────
+
+def ai_interpret_document(text, filename):
+    """AI解读上传的信贷政策文档，提取核心条款结构化存储。"""
+    if not text or not text.strip():
+        return {
+            'summary': '文档内容为空，无法解读',
+            'key_policies': [],
+            'applicable_scope': '',
+            'prohibitions': '',
+            'exceptions': '',
+        }
+
+    # 超长文档截断，避免超出 token 上限
+    text_preview = text[:8000] + ('…（文档过长，已截取前8000字）' if len(text) > 8000 else '')
+
+    if not zai_client.is_enabled():
+        return _rule_interpret_document(text, filename)
+
+    system = (
+        "你是北京银行信贷政策专家，擅长解读信贷政策文件并结构化输出核心要素。"
+        "请从文档中提取以下内容：\n"
+        "1. summary：文档整体摘要（200字以内）\n"
+        "2. key_policies：核心政策条款列表（字符串数组，每条简明扼要，最多15条）\n"
+        "3. applicable_scope：适用范围（字符串）\n"
+        "4. prohibitions：禁止事项（字符串）\n"
+        "5. exceptions：例外情形（字符串）\n"
+        "请严格只输出 JSON，字段：summary、key_policies(字符串数组)、"
+        "applicable_scope、prohibitions、exceptions（均为字符串）。"
+    )
+    user = (
+        f"文档名称：{filename}\n\n"
+        f"文档内容：\n{text_preview}\n\n"
+        "请提取核心政策要素，只返回 JSON。"
+    )
+
+    result = zai_client.analyze_json(system, user)
+    if not result:
+        return _rule_interpret_document(text, filename)
+
+    key_policies = result.get('key_policies', [])
+    if isinstance(key_policies, str):
+        key_policies = [key_policies]
+    elif not isinstance(key_policies, list):
+        key_policies = []
+
+    return {
+        'summary': result.get('summary') or f'已解读文档：{filename}',
+        'key_policies': [str(p) for p in key_policies[:15]],
+        'applicable_scope': result.get('applicable_scope') or '',
+        'prohibitions': result.get('prohibitions') or '',
+        'exceptions': result.get('exceptions') or '',
+    }
+
+
+def _rule_interpret_document(text, filename):
+    """AI 不可用时规则兜底：提取文档前几行作为摘要。"""
+    lines = [l.strip() for l in text.split('\n') if l.strip()]
+    summary = (
+        f'已上传文档：{filename}（共 {len(lines)} 行）。'
+        'AI解读功能暂不可用，文档已存入知识库，内容可在详情页查看原文。'
+    )
+    return {
+        'summary': summary,
+        'key_policies': lines[:10],
+        'applicable_scope': '',
+        'prohibitions': '',
+        'exceptions': '',
     }

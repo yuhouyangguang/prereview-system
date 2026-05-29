@@ -73,7 +73,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 20 }}>
+      <div className="dashboard-main-grid">
         {/* Recent projects */}
         <div className="card">
           <div className="flex-between" style={{ marginBottom: 16 }}>

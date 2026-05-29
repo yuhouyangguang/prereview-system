@@ -8,13 +8,30 @@ const ROLE_LABELS = {
   R04: '分行审批员', R05: '分行行长', R06: '总行审批员', R07: '总行行长',
 }
 
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth < 768)
+  useEffect(() => {
+    const handler = () => setIsMobile(window.innerWidth < 768)
+    window.addEventListener('resize', handler)
+    return () => window.removeEventListener('resize', handler)
+  }, [])
+  return isMobile
+}
+
 export default function Layout({ children }) {
   const { user, logout, refreshUser } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
+  const isMobile = useIsMobile()
+  const [sidebarOpen, setSidebarOpen] = useState(false)
   const [unread, setUnread] = useState(0)
   const [showNotif, setShowNotif] = useState(false)
   const [notifications, setNotifications] = useState([])
+
+  // 路由跳转时自动关闭移动端侧边栏
+  useEffect(() => {
+    if (isMobile) setSidebarOpen(false)
+  }, [location.pathname])
 
   useEffect(() => {
     // 初始加载未读数
@@ -84,9 +101,13 @@ export default function Layout({ children }) {
     }
     if (['R02', 'R05', 'R07'].includes(role)) {
       links.push({ to: '/leader-queue', label: '待我终审', icon: '✍️' })
+      links.push({ to: '/leader-stats', label: '绩效统计', icon: '📈' })
     }
     if (role === 'R02') {
       links.push({ to: '/branch-params', label: '经营参数', icon: '⚙️' })
+    }
+    if (['R03', 'R04', 'R06'].includes(role)) {
+      links.push({ to: '/knowledge-base', label: '信贷知识库', icon: '📚' })
     }
     links.push({ to: '/all-projects', label: '项目总览', icon: '🗂️' })
     return links
@@ -94,21 +115,38 @@ export default function Layout({ children }) {
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh' }}>
+      {/* 移动端遮罩 */}
+      {isMobile && sidebarOpen && (
+        <div onClick={() => setSidebarOpen(false)} style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', zIndex: 99,
+        }} />
+      )}
+
       {/* Sidebar */}
       <aside style={{
         width: 220, background: 'var(--primary-dark)', color: '#fff',
         display: 'flex', flexDirection: 'column', flexShrink: 0,
         position: 'fixed', top: 0, left: 0, bottom: 0, zIndex: 100,
+        transform: isMobile && !sidebarOpen ? 'translateX(-100%)' : 'translateX(0)',
+        transition: 'transform .25s ease',
       }}>
-        <div style={{ padding: '20px 16px 16px', borderBottom: '1px solid rgba(255,255,255,.1)' }}>
-          <div style={{ fontSize: 13, opacity: .7, marginBottom: 4 }}>北京银行</div>
-          <div style={{ fontWeight: 700, fontSize: 15, lineHeight: 1.3 }}>公司业务预审系统</div>
+        <div style={{ padding: '20px 16px 16px', borderBottom: '1px solid rgba(255,255,255,.1)', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <div>
+            <div style={{ fontSize: 13, opacity: .7, marginBottom: 4 }}>北京银行</div>
+            <div style={{ fontWeight: 700, fontSize: 15, lineHeight: 1.3 }}>公司业务预审系统</div>
+          </div>
+          {isMobile && (
+            <button onClick={() => setSidebarOpen(false)} style={{
+              background: 'none', border: 'none', color: 'rgba(255,255,255,.7)',
+              fontSize: 22, cursor: 'pointer', lineHeight: 1, padding: '0 4px',
+            }}>×</button>
+          )}
         </div>
         <nav style={{ flex: 1, padding: '12px 0', overflowY: 'auto' }}>
           {navLinks().map(l => (
             <Link key={l.to} to={l.to} style={{
               display: 'flex', alignItems: 'center', gap: 10,
-              padding: '10px 20px', fontSize: 14, fontWeight: 500,
+              padding: '11px 20px', fontSize: 14, fontWeight: 500,
               color: location.pathname === l.to ? '#fff' : 'rgba(255,255,255,.7)',
               background: location.pathname === l.to ? 'rgba(255,255,255,.15)' : 'transparent',
               borderLeft: location.pathname === l.to ? '3px solid #fff' : '3px solid transparent',
@@ -124,7 +162,7 @@ export default function Layout({ children }) {
           <div style={{ fontWeight: 600, marginBottom: 2 }}>{user?.name}</div>
           <div style={{ fontSize: 12, opacity: .7, marginBottom: 12 }}>{ROLE_LABELS[user?.role]}</div>
           <button onClick={handleLogout} style={{
-            width: '100%', padding: '8px', background: 'rgba(255,255,255,.1)',
+            width: '100%', padding: '10px', background: 'rgba(255,255,255,.1)',
             border: '1px solid rgba(255,255,255,.2)', color: '#fff', borderRadius: 6,
             fontSize: 13, cursor: 'pointer',
           }}>退出登录</button>
@@ -132,14 +170,23 @@ export default function Layout({ children }) {
       </aside>
 
       {/* Main */}
-      <div style={{ marginLeft: 220, flex: 1, display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
+      <div style={{ marginLeft: isMobile ? 0 : 220, flex: 1, display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
         {/* Top bar */}
         <header style={{
           background: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,.08)',
-          padding: '0 24px', height: 56,
-          display: 'flex', alignItems: 'center', justifyContent: 'flex-end',
+          padding: isMobile ? '0 16px' : '0 24px', height: 56,
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           position: 'sticky', top: 0, zIndex: 50,
         }}>
+          {/* 移动端汉堡按钮 */}
+          {isMobile ? (
+            <button onClick={() => setSidebarOpen(true)} style={{
+              background: 'none', border: 'none', cursor: 'pointer',
+              fontSize: 22, color: 'var(--gray-700)', padding: '4px 6px',
+              display: 'flex', alignItems: 'center',
+            }}>☰</button>
+          ) : <div />}
+
           <div style={{ position: 'relative' }}>
             <button onClick={loadNotifications} style={{
               background: 'none', border: 'none', cursor: 'pointer',
@@ -157,8 +204,12 @@ export default function Layout({ children }) {
             </button>
             {showNotif && (
               <div style={{
-                position: 'absolute', right: 0, top: 44,
-                width: 360, background: '#fff', borderRadius: 12,
+                position: 'fixed',
+                right: isMobile ? 8 : 16,
+                left: isMobile ? 8 : 'auto',
+                top: 64,
+                width: isMobile ? 'auto' : 360,
+                background: '#fff', borderRadius: 12,
                 boxShadow: '0 10px 40px rgba(0,0,0,.15)',
                 border: '1px solid var(--gray-200)', zIndex: 200,
               }}>
@@ -166,7 +217,7 @@ export default function Layout({ children }) {
                   <span style={{ fontWeight: 700 }}>消息通知</span>
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button onClick={markAllRead} style={{ fontSize: 12, color: 'var(--primary-light)', background: 'none', border: 'none', cursor: 'pointer' }}>全部已读</button>
-                    <button onClick={() => setShowNotif(false)} style={{ fontSize: 16, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--gray-400)' }}>×</button>
+                    <button onClick={() => setShowNotif(false)} style={{ fontSize: 20, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--gray-400)', lineHeight: 1 }}>×</button>
                   </div>
                 </div>
                 <div style={{ maxHeight: 400, overflowY: 'auto' }}>
@@ -194,7 +245,7 @@ export default function Layout({ children }) {
         </header>
 
         {/* Content */}
-        <main style={{ flex: 1, padding: '24px', maxWidth: 1200, width: '100%', margin: '0 auto' }}>
+        <main style={{ flex: 1, padding: isMobile ? '16px' : '24px', maxWidth: 1200, width: '100%', margin: '0 auto' }}>
           {children}
         </main>
       </div>

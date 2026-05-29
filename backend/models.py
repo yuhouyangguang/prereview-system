@@ -1,3 +1,5 @@
+import json as _json
+
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 
@@ -203,3 +205,45 @@ class AuditLog(db.Model):
     entry_hash = db.Column(db.String(64))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     user = db.relationship('User', foreign_keys=[user_id])
+
+
+class KnowledgeDoc(db.Model):
+    """FR-14：审批人员上传的信贷政策知识库文档。"""
+    __tablename__ = 'knowledge_docs'
+    id = db.Column(db.Integer, primary_key=True)
+    uploader_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    branch_level = db.Column(db.String(20), nullable=False)   # 支行/分行/总行
+    branch_id = db.Column(db.String(50), nullable=False)
+    branch_name = db.Column(db.String(100))
+    original_filename = db.Column(db.String(200), nullable=False)
+    stored_filename = db.Column(db.String(200), nullable=False)
+    doc_type = db.Column(db.String(10))   # pdf / word / txt
+    ai_summary = db.Column(db.Text)
+    key_policies = db.Column(db.Text)     # JSON 数组：核心政策条款列表
+    applicable_scope = db.Column(db.Text)
+    prohibitions = db.Column(db.Text)
+    exceptions = db.Column(db.Text)
+    status = db.Column(db.String(20), default='processing')   # processing/active/failed
+    is_active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    uploader = db.relationship('User', foreign_keys=[uploader_id])
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'uploader_id': self.uploader_id,
+            'uploader_name': self.uploader.name if self.uploader else '',
+            'branch_level': self.branch_level,
+            'branch_id': self.branch_id,
+            'branch_name': self.branch_name,
+            'original_filename': self.original_filename,
+            'doc_type': self.doc_type,
+            'ai_summary': self.ai_summary,
+            'key_policies': _json.loads(self.key_policies) if self.key_policies else [],
+            'applicable_scope': self.applicable_scope,
+            'prohibitions': self.prohibitions,
+            'exceptions': self.exceptions,
+            'status': self.status,
+            'is_active': self.is_active,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }

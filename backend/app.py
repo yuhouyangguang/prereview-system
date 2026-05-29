@@ -15,11 +15,12 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from models import (
     db, User, Project, PreReviewResult, Material, AIApprovalResult,
     ApprovalRecord, BranchParams, ParamsChangeLog, Signature, Notification,
-    AuditLog, ProjectVersion, UserKeyPair,
+    AuditLog, ProjectVersion, UserKeyPair, KnowledgeDoc,
 )
 from ai_engine import (
     ai_pre_review, generate_material_checklist, ai_auto_approval, verify_materials,
     determine_approval_level, calculate_eva, calculate_rwa, calculate_raroc,
+    ai_interpret_document,
 )
 
 try:
@@ -59,6 +60,62 @@ def log_action(user_id, project_id, action, details=None):
     log = AuditLog(user_id=user_id, project_id=project_id, action=action,
                    details=details_json, prev_hash=prev_hash, entry_hash=entry_hash)
     db.session.add(log)
+
+
+KNOWLEDGE_UPLOAD_DIR = os.path.join(os.path.dirname(__file__), 'knowledge_uploads')
+
+
+def _build_knowledge_ctx(creator_branch_id):
+    """构建分级知识库上下文字符串注入 AI 提示词。优先级：总行 > 分行 > 支行。"""
+    hq_docs = KnowledgeDoc.query.filter_by(branch_level='总行', is_active=True, status='active').all()
+    branch_docs = KnowledgeDoc.query.filter_by(branch_level='分行', is_active=True, status='active').all()
+    sub_docs = KnowledgeDoc.query.filter_by(
+        branch_level='支行', branch_id=creator_branch_id, is_active=True, status='active').all()
+
+    all_docs = [('总行', hq_docs), ('分行', branch_docs), ('支行', sub_docs)]
+    if not any(docs for _, docs in all_docs):
+        return ''
+
+    lines = ['【审批人员信贷政策知识库（冲突时高级别优先：总行>分行>支行）】']
+    for level, docs in all_docs:
+        for doc in docs:
+            lines.append(f'[{level}·{doc.original_filename}] {doc.ai_summary or ""}')
+            if doc.key_policies:
+                try:
+                    policies = json.loads(doc.key_policies)
+                    for p in policies[:5]:
+                        lines.append(f'  · {p}')
+                except Exception:
+                    pass
+            if doc.prohibitions:
+                lines.append(f'  禁止：{doc.prohibitions[:120]}')
+    return '\n'.join(lines)
+
+
+def _extract_text(file_path, doc_type):
+    """从上传文件中提取文本，支持 PDF/Word/TXT，任一库缺失时优雅降级。"""
+    try:
+        if doc_type == 'txt':
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                return f.read()
+        elif doc_type == 'pdf':
+            try:
+                import PyPDF2
+                with open(file_path, 'rb') as f:
+                    reader = PyPDF2.PdfReader(f)
+                    return '\n'.join(page.extract_text() or '' for page in reader.pages)
+            except ImportError:
+                return '（PDF解析库未安装，文档已保存，请联系管理员安装 PyPDF2）'
+        elif doc_type == 'word':
+            try:
+                import docx
+                doc = docx.Document(file_path)
+                return '\n'.join(para.text for para in doc.paragraphs)
+            except ImportError:
+                return '（Word解析库未安装，文档已保存，请联系管理员安装 python-docx）'
+    except Exception as e:
+        return f'（文本提取失败：{e}）'
+    return ''
 
 
 def can_access_project(user, p):
@@ -241,34 +298,54 @@ def me():
 @jwt_required()
 def list_projects():
     user = User.query.get(int(get_jwt_identity()))
+    done = request.args.get('done') == '1'
+
+    approver_level = {'R03': '支行', 'R04': '分行', 'R06': '总行'}
+    leader_level   = {'R02': '支行', 'R05': '分行', 'R07': '总行'}
+    PENDING_STATUSES = ['待人工审批', '待补充材料', '人工审批退回']
+    DONE_STATUSES    = ['待行长终审', '已终审', '行长退回']
+
     q = Project.query
     if user.role == 'R01':
         q = q.filter_by(creator_id=user.id)
-    elif user.role in ['R03']:  # 支行审批员
-        q = q.filter(Project.status.in_(['待人工审批', '待补充材料', '人工审批退回']),
-                     Project.current_approval_level == '支行')
-    elif user.role in ['R02']:  # 支行行长
-        q = q.filter(Project.status == '待行长终审',
-                     Project.current_approval_level == '支行')
-    elif user.role in ['R04']:  # 分行审批员
-        q = q.filter(Project.status.in_(['待人工审批', '待补充材料', '人工审批退回']),
-                     Project.current_approval_level == '分行')
-    elif user.role in ['R05']:  # 分行行长
-        q = q.filter(Project.status == '待行长终审',
-                     Project.current_approval_level == '分行')
-    elif user.role in ['R06']:  # 总行审批员
-        q = q.filter(Project.status.in_(['待人工审批', '待补充材料', '人工审批退回']),
-                     Project.current_approval_level == '总行')
-    elif user.role in ['R07']:  # 总行行长
-        q = q.filter(Project.status == '待行长终审',
-                     Project.current_approval_level == '总行')
+    elif user.role in approver_level:
+        my_level = approver_level[user.role]
+        if done:
+            # 本人有审批记录且项目已流转至行长阶段或终审
+            acted_ids = db.session.query(ApprovalRecord.project_id).filter_by(approver_id=user.id)
+            q = q.filter(Project.id.in_(acted_ids),
+                         Project.status.in_(DONE_STATUSES))
+        else:
+            q = q.filter(Project.status.in_(PENDING_STATUSES),
+                         Project.current_approval_level == my_level)
+    elif user.role in leader_level:
+        my_level = leader_level[user.role]
+        if done:
+            q = q.filter(Project.status.in_(['已终审', '行长退回']),
+                         Project.current_approval_level == my_level)
+        else:
+            q = q.filter(Project.status == '待行长终审',
+                         Project.current_approval_level == my_level)
 
     status_filter = request.args.get('status')
     if status_filter:
         q = q.filter_by(status=status_filter)
 
     projects = q.order_by(Project.updated_at.desc()).all()
-    return jsonify([project_to_dict(p) for p in projects])
+    result = [project_to_dict(p) for p in projects]
+
+    # 已办列表附上本人最后一次审批动作
+    if done and (user.role in approver_level or user.role in leader_level):
+        for d, p in zip(result, projects):
+            rec = ApprovalRecord.query.filter_by(
+                project_id=p.id, approver_id=user.id
+            ).order_by(ApprovalRecord.created_at.desc()).first()
+            if rec:
+                d['my_last_action'] = rec.action
+                d['my_last_opinion'] = rec.opinion
+                d['my_acted_at'] = rec.created_at.isoformat() if rec.created_at else None
+
+    return jsonify(result)
 
 
 @app.route('/api/projects', methods=['POST'])
@@ -362,7 +439,8 @@ def submit_prereview(pid):
 
     # Execute AI pre-review immediately
     params = get_branch_params(user.branch_id, p.loan_type or '通用')
-    result = ai_pre_review(p, params)
+    knowledge_ctx = _build_knowledge_ctx(user.branch_id)
+    result = ai_pre_review(p, params, knowledge_ctx=knowledge_ctx)
 
     if p.pre_review:
         db.session.delete(p.pre_review)
@@ -526,7 +604,8 @@ def trigger_ai_approval(pid):
             m.verification_notes = v['notes']
     db.session.flush()
 
-    result = ai_auto_approval(p, p.pre_review, p.materials, checklist=checklist)
+    knowledge_ctx = _build_knowledge_ctx(p.creator.branch_id)
+    result = ai_auto_approval(p, p.pre_review, p.materials, checklist=checklist, knowledge_ctx=knowledge_ctx)
 
     if p.ai_approval:
         db.session.delete(p.ai_approval)
@@ -1190,6 +1269,242 @@ def verify_signatures(pid):
         })
 
     return jsonify({'project_no': p.project_no, 'signatures': results})
+
+
+# ── FR-13：行长业务绩效统计分析 ────────────────────────────────────────────────────
+
+@app.route('/api/leader-stats', methods=['GET'])
+@jwt_required()
+def leader_stats():
+    from collections import defaultdict
+    user = User.query.get(int(get_jwt_identity()))
+    if user.role not in ['R02', 'R05', 'R07']:
+        return jsonify({'error': '仅行长可查看绩效统计'}), 403
+
+    end_dt = datetime.utcnow()
+    start_dt = end_dt - timedelta(days=30)
+    start_str = request.args.get('start', '')
+    end_str = request.args.get('end', '')
+    loan_type_filter = request.args.get('loan_type', '')
+    do_export = request.args.get('export') == '1'
+
+    if start_str:
+        try:
+            start_dt = datetime.strptime(start_str, '%Y-%m-%d')
+        except ValueError:
+            pass
+    if end_str:
+        try:
+            end_dt = datetime.strptime(end_str, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
+        except ValueError:
+            pass
+
+    # 取日期范围内的签字记录，得到项目ID→签字时间映射
+    sigs = Signature.query.filter(
+        Signature.created_at >= start_dt,
+        Signature.created_at <= end_dt,
+    ).all()
+    sig_map = {}
+    for sig in sigs:
+        if sig.project_id not in sig_map:
+            sig_map[sig.project_id] = sig.created_at
+
+    empty_summary = {'total_eva': 0, 'total_rwa': 0, 'avg_raroc': 0, 'total_count': 0}
+    if not sig_map:
+        return jsonify({'data_points': [], 'summary': empty_summary, 'granularity': 'day'})
+
+    q = Project.query.filter(
+        Project.id.in_(list(sig_map.keys())),
+        Project.status == '已终审',
+    )
+    if loan_type_filter:
+        q = q.filter(Project.loan_type == loan_type_filter)
+
+    projects = q.all()
+
+    entries = []
+    for p in projects:
+        if not p.pre_review:
+            continue
+        creator = User.query.get(p.creator_id)
+        if not creator:
+            continue
+        if user.role == 'R02' and creator.branch_id != user.branch_id:
+            continue
+        if user.role == 'R05' and creator.branch_level not in ('支行', '分行'):
+            continue
+        entries.append((p, sig_map[p.id]))
+
+    delta = (end_dt - start_dt).days
+    if delta <= 30:
+        granularity = 'day'
+    elif delta <= 90:
+        granularity = 'week'
+    else:
+        granularity = 'month'
+
+    groups = defaultdict(lambda: {'eva': [], 'rwa': [], 'raroc': [], 'count': 0})
+    for p, sig_date in entries:
+        if granularity == 'week':
+            week_start = sig_date.date() - timedelta(days=sig_date.weekday())
+            date_key = str(week_start)
+        elif granularity == 'month':
+            date_key = sig_date.strftime('%Y-%m')
+        else:
+            date_key = sig_date.strftime('%Y-%m-%d')
+
+        groups[date_key]['count'] += 1
+        if p.pre_review.eva_result is not None:
+            groups[date_key]['eva'].append(p.pre_review.eva_result)
+        if p.pre_review.rwa_result is not None:
+            groups[date_key]['rwa'].append(p.pre_review.rwa_result)
+        if p.pre_review.raroc_result is not None:
+            groups[date_key]['raroc'].append(p.pre_review.raroc_result)
+
+    data_points = []
+    for dk in sorted(groups.keys()):
+        g = groups[dk]
+        data_points.append({
+            'date': dk,
+            'eva': round(sum(g['eva']), 2) if g['eva'] else None,
+            'rwa': round(sum(g['rwa']), 2) if g['rwa'] else None,
+            'raroc': round(sum(g['raroc']) / len(g['raroc']), 2) if g['raroc'] else None,
+            'count': g['count'],
+        })
+
+    all_eva = [dp['eva'] for dp in data_points if dp['eva'] is not None]
+    all_rwa = [dp['rwa'] for dp in data_points if dp['rwa'] is not None]
+    all_raroc = [dp['raroc'] for dp in data_points if dp['raroc'] is not None]
+    total_count = sum(g['count'] for g in groups.values())
+    summary = {
+        'total_eva': round(sum(all_eva), 2) if all_eva else 0,
+        'total_rwa': round(sum(all_rwa), 2) if all_rwa else 0,
+        'avg_raroc': round(sum(all_raroc) / len(all_raroc), 2) if all_raroc else 0,
+        'total_count': total_count,
+    }
+
+    if do_export:
+        import csv, io
+        out = io.StringIO()
+        w = csv.writer(out)
+        w.writerow(['日期', 'EVA(万元)', 'RWA(万元)', 'RAROC(%)', '业务笔数'])
+        for dp in data_points:
+            w.writerow([dp['date'], dp['eva'], dp['rwa'], dp['raroc'], dp['count']])
+        w.writerow(['合计/均值', summary['total_eva'], summary['total_rwa'],
+                    summary['avg_raroc'], summary['total_count']])
+        fname = f'leader_stats_{start_str or "start"}_{end_str or "end"}.csv'
+        return Response(
+            '﻿' + out.getvalue(),
+            mimetype='text/csv; charset=utf-8',
+            headers={'Content-Disposition': f'attachment; filename={fname}'},
+        )
+
+    return jsonify({'data_points': data_points, 'summary': summary, 'granularity': granularity})
+
+
+# ── FR-14：审批人员信贷政策知识库 ────────────────────────────────────────────────────
+
+@app.route('/api/knowledge', methods=['GET'])
+@jwt_required()
+def list_knowledge():
+    user = User.query.get(int(get_jwt_identity()))
+    if user.role not in ['R03', 'R04', 'R06']:
+        return jsonify({'error': '仅审批员可访问知识库'}), 403
+
+    scope = request.args.get('scope', 'own')
+    if scope == 'own':
+        docs = KnowledgeDoc.query.filter_by(
+            branch_level=user.branch_level,
+            branch_id=user.branch_id,
+            is_active=True,
+        ).order_by(KnowledgeDoc.created_at.desc()).all()
+    else:
+        upper_map = {'R03': ['分行', '总行'], 'R04': ['总行'], 'R06': []}
+        upper_levels = upper_map.get(user.role, [])
+        if not upper_levels:
+            return jsonify([])
+        docs = KnowledgeDoc.query.filter(
+            KnowledgeDoc.branch_level.in_(upper_levels),
+            KnowledgeDoc.is_active == True,
+        ).order_by(KnowledgeDoc.branch_level.desc(), KnowledgeDoc.created_at.desc()).all()
+
+    return jsonify([d.to_dict() for d in docs])
+
+
+@app.route('/api/knowledge/upload', methods=['POST'])
+@jwt_required()
+def upload_knowledge():
+    user = User.query.get(int(get_jwt_identity()))
+    if user.role not in ['R03', 'R04', 'R06']:
+        return jsonify({'error': '仅审批员可上传知识库文档'}), 403
+
+    if 'file' not in request.files:
+        return jsonify({'error': '请上传文件'}), 400
+    f = request.files['file']
+    if not f.filename:
+        return jsonify({'error': '文件名不能为空'}), 400
+
+    fname_lower = f.filename.lower()
+    if fname_lower.endswith('.pdf'):
+        doc_type = 'pdf'
+    elif fname_lower.endswith('.docx') or fname_lower.endswith('.doc'):
+        doc_type = 'word'
+    elif fname_lower.endswith('.txt'):
+        doc_type = 'txt'
+    else:
+        return jsonify({'error': '仅支持 PDF、Word(.docx/.doc)、TXT 格式'}), 400
+
+    os.makedirs(KNOWLEDGE_UPLOAD_DIR, exist_ok=True)
+    stored_name = f'{uuid.uuid4().hex}_{f.filename}'
+    file_path = os.path.join(KNOWLEDGE_UPLOAD_DIR, stored_name)
+    f.save(file_path)
+
+    doc = KnowledgeDoc(
+        uploader_id=user.id,
+        branch_level=user.branch_level,
+        branch_id=user.branch_id,
+        branch_name=user.branch_name,
+        original_filename=f.filename,
+        stored_filename=stored_name,
+        doc_type=doc_type,
+        status='processing',
+    )
+    db.session.add(doc)
+    db.session.commit()
+
+    try:
+        text = _extract_text(file_path, doc_type)
+        interp = ai_interpret_document(text, f.filename)
+        doc.ai_summary = interp.get('summary', '')
+        doc.key_policies = json.dumps(interp.get('key_policies', []), ensure_ascii=False)
+        doc.applicable_scope = interp.get('applicable_scope', '')
+        doc.prohibitions = interp.get('prohibitions', '')
+        doc.exceptions = interp.get('exceptions', '')
+        doc.status = 'active'
+    except Exception as e:
+        doc.ai_summary = f'解读失败：{e}'
+        doc.status = 'failed'
+
+    db.session.commit()
+    log_action(user.id, None, '上传知识库文档', {'filename': f.filename, 'doc_id': doc.id})
+    return jsonify(doc.to_dict()), 201
+
+
+@app.route('/api/knowledge/<int:doc_id>', methods=['DELETE'])
+@jwt_required()
+def delete_knowledge(doc_id):
+    user = User.query.get(int(get_jwt_identity()))
+    if user.role not in ['R03', 'R04', 'R06']:
+        return jsonify({'error': '仅审批员可删除知识库文档'}), 403
+
+    doc = KnowledgeDoc.query.get_or_404(doc_id)
+    if doc.uploader_id != user.id:
+        return jsonify({'error': '只能删除自己上传的文档'}), 403
+
+    doc.is_active = False
+    db.session.commit()
+    log_action(user.id, None, '删除知识库文档', {'filename': doc.original_filename, 'doc_id': doc_id})
+    return jsonify({'message': '文档已删除'})
 
 
 # ── SYSTEM / AI CONFIG ────────────────────────────────────────────────────────

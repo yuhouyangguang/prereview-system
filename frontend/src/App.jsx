@@ -12,6 +12,8 @@ import MaterialVerification from './pages/MaterialVerification'
 import ApprovalQueue from './pages/ApprovalQueue'
 import LeaderQueue from './pages/LeaderQueue'
 import BranchParams from './pages/BranchParams'
+import LeaderStats from './pages/LeaderStats'
+import KnowledgeBase from './pages/KnowledgeBase'
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth()
@@ -36,6 +38,8 @@ function AppRoutes() {
       <Route path="/approval-queue" element={<ProtectedRoute><ApprovalQueue /></ProtectedRoute>} />
       <Route path="/leader-queue" element={<ProtectedRoute><LeaderQueue /></ProtectedRoute>} />
       <Route path="/branch-params" element={<ProtectedRoute><BranchParams /></ProtectedRoute>} />
+      <Route path="/leader-stats" element={<ProtectedRoute><LeaderStats /></ProtectedRoute>} />
+      <Route path="/knowledge-base" element={<ProtectedRoute><KnowledgeBase /></ProtectedRoute>} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
   )

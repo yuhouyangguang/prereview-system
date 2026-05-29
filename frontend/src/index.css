@@ -124,8 +124,48 @@ textarea.form-control { resize: vertical; min-height: 80px; }
 .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
 .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
 
-@media (max-width: 768px) {
+@media (max-width: 767px) {
   .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+
+  /* 卡片间距缩减 */
+  .card { padding: 16px; }
+
+  /* 页头标题+按钮换行 */
+  .page-header .flex-between {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  .page-header h1 { font-size: 18px; }
+
+  /* 表格横向滚动 */
+  .card { overflow-x: auto; }
+
+  /* 表格字体略小 */
+  th, td { padding: 9px 10px; font-size: 13px; }
+
+  /* 弹窗从底部弹出 */
+  .modal-overlay { align-items: flex-end; padding: 0; }
+  .modal {
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    max-width: 100%;
+    max-height: 92vh;
+  }
+
+  /* 按钮触摸友好 */
+  .btn { padding: 10px 14px; }
+  .btn-sm { padding: 8px 12px; }
+
+  /* stat-card 数字缩小 */
+  .stat-card .value { font-size: 24px; }
+  .stat-card { padding: 14px; }
+
+  /* flex-between 允许换行 */
+  .flex-between { flex-wrap: wrap; gap: 8px; }
+
+  /* 搜索过滤器换行 */
+  .flex.gap-3 { flex-wrap: wrap; }
+  .flex.gap-3 .form-control { max-width: 100% !important; }
 }
 
 .flex { display: flex; }
@@ -272,6 +312,15 @@ tr:hover td { background: var(--gray-50); }
 }
 .timeline-content { background: var(--gray-50); border-radius: var(--radius); padding: 12px 14px; }
 .timeline-meta { font-size: 11px; color: var(--gray-400); margin-top: 4px; }
+
+.dashboard-main-grid {
+  display: grid;
+  grid-template-columns: 1fr 300px;
+  gap: 20px;
+}
+@media (max-width: 767px) {
+  .dashboard-main-grid { grid-template-columns: 1fr; }
+}
 
 .stat-card {
   background: #fff;
