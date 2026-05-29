@@ -1,0 +1,21 @@
+{
+  "version": "2024-Q4",
+  "source": "同业授信参考数据（支行辖内样本均值，仅供内部定价参考）",
+  "data": [
+    {"industry": "制造业",   "loan_type": "流动资金贷款", "guarantee_type": "抵押", "amount_range": "500-5000",  "rate_avg": 3.85, "rate_range": [3.50, 4.30], "count": 42},
+    {"industry": "制造业",   "loan_type": "固定资产贷款", "guarantee_type": "抵押", "amount_range": "1000-20000","rate_avg": 4.05, "rate_range": [3.80, 4.50], "count": 18},
+    {"industry": "批发零售", "loan_type": "流动资金贷款", "guarantee_type": "保证", "amount_range": "500-3000",  "rate_avg": 4.15, "rate_range": [3.70, 4.80], "count": 35},
+    {"industry": "批发零售", "loan_type": "流动资金贷款", "guarantee_type": "抵押", "amount_range": "200-5000",  "rate_avg": 3.95, "rate_range": [3.60, 4.40], "count": 27},
+    {"industry": "科技",     "loan_type": "流动资金贷款", "guarantee_type": "信用", "amount_range": "100-2000",  "rate_avg": 3.95, "rate_range": [3.50, 4.50], "count": 28},
+    {"industry": "科技",     "loan_type": "流动资金贷款", "guarantee_type": "抵押", "amount_range": "500-5000",  "rate_avg": 3.70, "rate_range": [3.40, 4.10], "count": 19},
+    {"industry": "建筑",     "loan_type": "流动资金贷款", "guarantee_type": "抵押", "amount_range": "500-10000", "rate_avg": 4.25, "rate_range": [3.90, 4.80], "count": 22},
+    {"industry": "医疗",     "loan_type": "固定资产贷款", "guarantee_type": "抵押", "amount_range": "1000-15000","rate_avg": 3.90, "rate_range": [3.60, 4.30], "count": 15},
+    {"industry": "医疗",     "loan_type": "流动资金贷款", "guarantee_type": "保证", "amount_range": "200-2000",  "rate_avg": 3.85, "rate_range": [3.50, 4.20], "count": 11},
+    {"industry": "教育",     "loan_type": "流动资金贷款", "guarantee_type": "保证", "amount_range": "100-1000",  "rate_avg": 3.80, "rate_range": [3.50, 4.20], "count": 9},
+    {"industry": "绿色能源", "loan_type": "固定资产贷款", "guarantee_type": "抵押", "amount_range": "2000-50000","rate_avg": 3.60, "rate_range": [3.20, 4.00], "count": 13},
+    {"industry": "农业",     "loan_type": "流动资金贷款", "guarantee_type": "保证", "amount_range": "50-500",    "rate_avg": 3.70, "rate_range": [3.30, 4.10], "count": 24},
+    {"industry": "服务业",   "loan_type": "流动资金贷款", "guarantee_type": "抵押", "amount_range": "200-3000",  "rate_avg": 3.95, "rate_range": [3.60, 4.40], "count": 31},
+    {"industry": "采矿",     "loan_type": "流动资金贷款", "guarantee_type": "抵押", "amount_range": "1000-10000","rate_avg": 4.50, "rate_range": [4.10, 5.00], "count": 8},
+    {"industry": "贸易融资", "loan_type": "贸易融资",     "guarantee_type": "质押", "amount_range": "200-5000",  "rate_avg": 3.75, "rate_range": [3.30, 4.20], "count": 31}
+  ]
+}
