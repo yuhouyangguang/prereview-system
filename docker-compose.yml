@@ -1,0 +1,39 @@
+# ================================================================
+# 公司业务预审系统 · Docker 编排
+# 用法：
+#   1. cp .env.template .env  并填写 ZAI_API_KEY / JWT_SECRET_KEY 等
+#   2. docker compose up -d --build
+#   3. 浏览器访问 http://<服务器IP>:8080
+# ================================================================
+services:
+  backend:
+    build: ./backend
+    image: prereview-backend:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # 容器内生产配置（覆盖 .env 中的开发默认值）
+      FLASK_ENV: production
+      FLASK_DEBUG: "0"
+      DATABASE_URI: sqlite:////app/instance/prereview.db
+    volumes:
+      - prereview-db:/app/instance        # SQLite 数据库持久化
+      - prereview-keys:/app/keystores     # RSA 签章私钥持久化
+    expose:
+      - "5000"
+    # 如需直接调试后端，可临时放开：
+    # ports:
+    #   - "5000:5000"
+
+  frontend:
+    build: ./frontend
+    image: prereview-frontend:latest
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"      # 对外访问端口，可按需改为 80:80
+
+volumes:
+  prereview-db:
+  prereview-keys:
